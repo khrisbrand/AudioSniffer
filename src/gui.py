@@ -20,6 +20,7 @@ class AudioSnifferApp(QWidget):
         self.language = "es-ES"
         self.frames = []
         self.start_time = None
+        self.stream = None
 
     def init_ui(self):
         self.setWindowTitle("Audio Sniffer")
@@ -76,7 +77,8 @@ class AudioSnifferApp(QWidget):
         self.paused = False
         self.frames = []
         self.start_time = time.time()
-        threading.Thread(target=self.record_audio).start()
+        self.stream = sd.InputStream(samplerate=self.samplerate, channels=2, dtype=np.int16, callback=self.callback)
+        self.stream.start()
         threading.Thread(target=self.update_timer).start()
 
     def pause_recording(self):
@@ -87,19 +89,18 @@ class AudioSnifferApp(QWidget):
         if self.paused:
             self.status_label.setText("Grabando...")
             self.paused = False
-            threading.Thread(target=self.record_audio).start()
 
     def stop_recording(self):
         self.recording = False
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
         self.status_label.setText("Grabación finalizada")
         self.save_audio()
 
-    def record_audio(self):
-        with sd.InputStream(samplerate=self.samplerate, channels=1, dtype=np.int16) as stream:
-            while self.recording:
-                if not self.paused:
-                    data, _ = stream.read(1024)
-                    self.frames.append(data)
+    def callback(self, indata, frames, time, status):
+        if self.recording and not self.paused:
+            self.frames.append(indata.copy())
 
     def update_timer(self):
         while self.recording:
@@ -112,10 +113,10 @@ class AudioSnifferApp(QWidget):
             self.audio_filename = QFileDialog.getSaveFileName(self, "Guardar archivo", "", "Audio Files (*.wav)")[0]
         if self.audio_filename:
             with wave.open(self.audio_filename, "wb") as wf:
-                wf.setnchannels(1)
+                wf.setnchannels(2)
                 wf.setsampwidth(2)
                 wf.setframerate(self.samplerate)
-                wf.writeframes(b"".join(self.frames))
+                wf.writeframes(b"".join([frame.tobytes() for frame in self.frames]))
             self.status_label.setText(f"Audio guardado en: {self.audio_filename}")
 
     def select_save_location(self):
@@ -133,17 +134,18 @@ class AudioSnifferApp(QWidget):
             self.status_label.setText("No hay archivo de audio para transcribir")
             return
         recognizer = sr.Recognizer()
-        with sr.AudioFile(self.audio_filename) as source:
-            audio_data = recognizer.record(source)
-        self.progress.setValue(50)
-
         try:
+            with sr.AudioFile(self.audio_filename) as source:
+                audio_data = recognizer.record(source)
+            self.progress.setValue(50)
             text = recognizer.recognize_google(audio_data, language=self.language)
             self.status_label.setText(f"Texto: {text}")
         except sr.UnknownValueError:
             self.status_label.setText("No se pudo entender el audio")
         except sr.RequestError:
             self.status_label.setText("Error en el servicio de reconocimiento")
+        except Exception as e:
+            self.status_label.setText(f"Error: {str(e)}")
 
         self.progress.setValue(100)
 
