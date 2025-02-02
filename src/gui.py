@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton,
-                               QLabel, QFileDialog, QProgressBar, QComboBox)
+                               QLabel, QFileDialog, QProgressBar, QComboBox, QLCDNumber)
 import sys
 import sounddevice as sd
 import numpy as np
 import wave
 import threading
+import time
 import speech_recognition as sr
 
 
@@ -14,8 +15,11 @@ class AudioSnifferApp(QWidget):
         self.init_ui()
         self.audio_filename = ""
         self.recording = False
+        self.paused = False
         self.samplerate = 44100
         self.language = "es-ES"
+        self.frames = []
+        self.start_time = None
 
     def init_ui(self):
         self.setWindowTitle("Audio Sniffer")
@@ -28,6 +32,9 @@ class AudioSnifferApp(QWidget):
         self.progress = QProgressBar()
         self.progress.setValue(0)
         layout.addWidget(self.progress)
+
+        self.timer_display = QLCDNumber()
+        layout.addWidget(self.timer_display)
 
         self.language_select = QComboBox()
         self.language_select.addItems(["es-ES", "en-US", "fr-FR", "de-DE", "it-IT"])
@@ -42,9 +49,13 @@ class AudioSnifferApp(QWidget):
         self.pause_button.clicked.connect(self.pause_recording)
         layout.addWidget(self.pause_button)
 
-        self.play_button = QPushButton("Reproducir")
-        self.play_button.clicked.connect(self.play_audio)
-        layout.addWidget(self.play_button)
+        self.resume_button = QPushButton("Continuar")
+        self.resume_button.clicked.connect(self.resume_recording)
+        layout.addWidget(self.resume_button)
+
+        self.stop_button = QPushButton("Parar")
+        self.stop_button.clicked.connect(self.stop_recording)
+        layout.addWidget(self.stop_button)
 
         self.save_button = QPushButton("Guardar en...")
         self.save_button.clicked.connect(self.select_save_location)
@@ -62,35 +73,50 @@ class AudioSnifferApp(QWidget):
     def start_recording(self):
         self.status_label.setText("Grabando...")
         self.recording = True
+        self.paused = False
+        self.frames = []
+        self.start_time = time.time()
         threading.Thread(target=self.record_audio).start()
+        threading.Thread(target=self.update_timer).start()
 
     def pause_recording(self):
-        self.recording = False
+        self.paused = True
         self.status_label.setText("Pausado")
 
+    def resume_recording(self):
+        if self.paused:
+            self.status_label.setText("Grabando...")
+            self.paused = False
+            threading.Thread(target=self.record_audio).start()
+
+    def stop_recording(self):
+        self.recording = False
+        self.status_label.setText("Grabación finalizada")
+        self.save_audio()
+
     def record_audio(self):
-        duration = 5  # Se puede cambiar
-        audio_data = sd.rec(int(duration * self.samplerate), samplerate=self.samplerate, channels=1, dtype=np.int16)
-        sd.wait()
-        self.progress.setValue(50)
+        with sd.InputStream(samplerate=self.samplerate, channels=1, dtype=np.int16) as stream:
+            while self.recording:
+                if not self.paused:
+                    data, _ = stream.read(1024)
+                    self.frames.append(data)
 
-        if self.audio_filename == "":
-            self.audio_filename = "captura.wav"
+    def update_timer(self):
+        while self.recording:
+            elapsed_time = int(time.time() - self.start_time)
+            self.timer_display.display(elapsed_time)
+            time.sleep(1)
 
-        with wave.open(self.audio_filename, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(self.samplerate)
-            wf.writeframes(audio_data.tobytes())
-
-        self.progress.setValue(100)
-        self.status_label.setText("Grabación guardada")
-
-    def play_audio(self):
+    def save_audio(self):
+        if not self.audio_filename:
+            self.audio_filename = QFileDialog.getSaveFileName(self, "Guardar archivo", "", "Audio Files (*.wav)")[0]
         if self.audio_filename:
-            import simpleaudio as sa
-            wave_obj = sa.WaveObject.from_wave_file(self.audio_filename)
-            wave_obj.play()
+            with wave.open(self.audio_filename, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.samplerate)
+                wf.writeframes(b"".join(self.frames))
+            self.status_label.setText(f"Audio guardado en: {self.audio_filename}")
 
     def select_save_location(self):
         filename, _ = QFileDialog.getSaveFileName(self, "Guardar archivo", "", "Audio Files (*.wav)")
@@ -103,6 +129,9 @@ class AudioSnifferApp(QWidget):
         threading.Thread(target=self.transcribe_audio).start()
 
     def transcribe_audio(self):
+        if not self.audio_filename:
+            self.status_label.setText("No hay archivo de audio para transcribir")
+            return
         recognizer = sr.Recognizer()
         with sr.AudioFile(self.audio_filename) as source:
             audio_data = recognizer.record(source)
