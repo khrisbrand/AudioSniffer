@@ -9,6 +9,12 @@ import time
 import speech_recognition as sr
 
 
+def get_audio_devices():
+    devices = sd.query_devices()
+    device_list = [f"{idx}: {device['name']}" for idx, device in enumerate(devices) if device['max_input_channels'] > 0]
+    return device_list
+
+
 class AudioSnifferApp(QWidget):
     def __init__(self):
         super().__init__()
@@ -21,10 +27,12 @@ class AudioSnifferApp(QWidget):
         self.frames = []
         self.start_time = None
         self.stream = None
+        self.devices = get_audio_devices()
+        self.device = None
 
     def init_ui(self):
         self.setWindowTitle("Audio Sniffer")
-        self.setGeometry(100, 100, 400, 300)
+        self.setGeometry(100, 100, 400, 350)
         layout = QVBoxLayout()
 
         self.status_label = QLabel("Listo para grabar")
@@ -42,6 +50,17 @@ class AudioSnifferApp(QWidget):
         self.language_select.currentTextChanged.connect(self.change_language)
         layout.addWidget(self.language_select)
 
+        #self.device_select = QComboBox()
+        #self.device_select.addItems(get_audio_devices())
+        #self.device_select.currentTextChanged.connect(self.change_device)
+        #layout.addWidget(self.device_select)
+
+        self.device_select = QComboBox()
+        device_names = get_audio_devices()  # Obtén la lista de nombres
+        self.device_select.addItems(device_names)  # Agrega los nombres al QComboBox
+        self.device_select.currentTextChanged.connect(self.change_device)
+        layout.addWidget(self.device_select)
+        #
         self.record_button = QPushButton("Grabar")
         self.record_button.clicked.connect(self.start_recording)
         layout.addWidget(self.record_button)
@@ -71,13 +90,39 @@ class AudioSnifferApp(QWidget):
     def change_language(self, lang):
         self.language = lang
 
+    #def change_device(self, index):
+    #    device_keys = list(self.devices.keys())
+    #    if 0 <= index < len(device_keys):
+    #        self.device = int(device_keys[index])
+
+    def change_device(self, device_info):
+        if device_info:
+            device_index = int(device_info.split(':')[0])  # Extrae el índice del texto
+            self.device = device_index  # Guarda el índice del dispositivo seleccionado
+
     def start_recording(self):
+        if self.device is None:
+            self.status_label.setText("No se ha seleccionado un dispositivo de audio válido")
+            return
+
         self.status_label.setText("Grabando...")
         self.recording = True
         self.paused = False
         self.frames = []
         self.start_time = time.time()
-        self.stream = sd.InputStream(samplerate=self.samplerate, channels=2, dtype=np.int16, callback=self.callback)
+
+        device_info = sd.query_devices(self.device)
+        samplerate = int(device_info['default_samplerate'])
+
+        self.stream = sd.InputStream(
+            samplerate=samplerate,
+            device=self.device,
+            channels=2,
+            dtype='int16',
+            callback=self.callback,
+            blocksize=1024,
+            latency='low'
+        )
         self.stream.start()
         threading.Thread(target=self.update_timer).start()
 
